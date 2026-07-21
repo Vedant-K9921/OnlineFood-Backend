@@ -11,8 +11,6 @@ import java.util.List;
 @Value("${frontend.url}")
 private String frontendUrl;
 
-configuration.setAllowedOrigins(List.of(frontendUrl, "http://localhost:5173"));
-
 @Configuration
 public class CorsConfig {
 
@@ -22,8 +20,7 @@ public class CorsConfig {
         CorsConfiguration configuration =
                 new CorsConfiguration();
 
-        configuration.setAllowedOrigins(
-                List.of("http://localhost:5173")
+        configuration.setAllowedOrigins(List.of(frontendUrl, "http://localhost:5173")
         );
 
         configuration.setAllowedMethods(
