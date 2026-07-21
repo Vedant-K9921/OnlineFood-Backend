@@ -1,5 +1,6 @@
 package com.localbites.config;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.cors.CorsConfiguration;
@@ -8,11 +9,11 @@ import org.springframework.web.cors.CorsConfigurationSource;
 
 import java.util.List;
 
-@Value("${frontend.url}")
-private String frontendUrl;
-
 @Configuration
 public class CorsConfig {
+
+    @Value("${frontend.url}")
+    private String frontendUrl;
 
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
@@ -20,7 +21,8 @@ public class CorsConfig {
         CorsConfiguration configuration =
                 new CorsConfiguration();
 
-        configuration.setAllowedOrigins(List.of(frontendUrl, "http://localhost:5173")
+        configuration.setAllowedOrigins(
+                List.of(frontendUrl, "http://localhost:5173")
         );
 
         configuration.setAllowedMethods(
