@@ -8,6 +8,11 @@ import org.springframework.web.cors.CorsConfigurationSource;
 
 import java.util.List;
 
+@Value("${frontend.url}")
+private String frontendUrl;
+
+configuration.setAllowedOrigins(List.of(frontendUrl, "http://localhost:5173"));
+
 @Configuration
 public class CorsConfig {
 
