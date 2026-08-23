@@ -16,10 +16,14 @@ import com.localbites.exception.ResourceNotFoundException;
 import com.localbites.exception.UnauthorizedException;
 import com.localbites.repository.CartItemRepository;
 import com.localbites.repository.OrderRepository;
+import com.localbites.repository.RestaurantRepository;
 import com.localbites.repository.UserRepository;
+import com.localbites.security.CustomUserDetails;
 import com.localbites.service.OrderService;
 import com.localbites.service.OrderTrackingService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -34,6 +38,7 @@ public class OrderServiceImpl implements OrderService {
 
     private final OrderRepository orderRepository;
     private final CartItemRepository cartItemRepository;
+    private final RestaurantRepository restaurantRepository;
     private final UserRepository userRepository;
     private final OrderTrackingService orderTrackingService;
 
@@ -41,11 +46,8 @@ public class OrderServiceImpl implements OrderService {
     public OrderResponse placeOrder(Long userId, PlaceOrderRequest request) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
-
         List<CartItem> cartItems = cartItemRepository.findByUserId(userId);
-        if (cartItems.isEmpty()) {
-            throw new BadRequestException("Cart is empty");
-        }
+        if (cartItems.isEmpty()) throw new BadRequestException("Cart is empty");
 
         Restaurant restaurant = cartItems.get(0).getMenuItem().getRestaurant();
         if (!Boolean.TRUE.equals(restaurant.getIsOpen())) {
@@ -54,10 +56,8 @@ public class OrderServiceImpl implements OrderService {
 
         BigDecimal totalAmount = BigDecimal.ZERO;
         List<OrderItem> orderItems = new ArrayList<>();
-
         for (CartItem cartItem : cartItems) {
             MenuItem menuItem = cartItem.getMenuItem();
-
             if (!restaurant.getId().equals(menuItem.getRestaurant().getId())) {
                 throw new BadRequestException("Cart contains items from multiple restaurants");
             }
@@ -69,11 +69,8 @@ public class OrderServiceImpl implements OrderService {
             }
 
             BigDecimal price = menuItem.getPrice();
-            BigDecimal itemTotal = price.multiply(BigDecimal.valueOf(cartItem.getQuantity()));
-            totalAmount = totalAmount.add(itemTotal);
-
+            totalAmount = totalAmount.add(price.multiply(BigDecimal.valueOf(cartItem.getQuantity())));
             orderItems.add(OrderItem.builder()
-                    .order(null)
                     .menuItem(menuItem)
                     .quantity(cartItem.getQuantity())
                     .priceAtOrder(price)
@@ -89,19 +86,18 @@ public class OrderServiceImpl implements OrderService {
                 .totalAmount(totalAmount)
                 .orderItems(orderItems)
                 .build();
-
         orderItems.forEach(item -> item.setOrder(order));
+
         Order savedOrder = orderRepository.save(order);
         cartItemRepository.deleteAll(cartItems);
-
         return mapToResponse(savedOrder);
     }
 
     @Override
     @Transactional(readOnly = true)
     public List<OrderResponse> getMyOrders(Long userId) {
-        return orderRepository.findByUserIdOrderByCreatedAtDesc(userId)
-                .stream().map(this::mapToResponse).toList();
+        return orderRepository.findByUserIdOrderByCreatedAtDesc(userId).stream()
+                .map(this::mapToResponse).toList();
     }
 
     @Override
@@ -109,29 +105,25 @@ public class OrderServiceImpl implements OrderService {
     public OrderResponse getOrderById(Long orderId, Long userId) {
         Order order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new ResourceNotFoundException("Order not found"));
-        if (!order.getUser().getId().equals(userId)) {
-            throw new UnauthorizedException("Access denied");
-        }
+        if (!order.getUser().getId().equals(userId)) throw new UnauthorizedException("Access denied");
         return mapToResponse(order);
     }
 
     @Override
     @Transactional(readOnly = true)
     public List<OrderResponse> getRestaurantOrders(Long restaurantId) {
-        User owner = getCurrentUser();
-        Restaurant restaurant = getRestaurant(restaurantId);
-        verifyOwner(restaurant, owner);
-
-        return orderRepository.findByRestaurantIdOrderByCreatedAtDesc(restaurantId)
-                .stream().map(this::mapToResponse).toList();
+        Restaurant restaurant = restaurantRepository.findById(restaurantId)
+                .orElseThrow(() -> new ResourceNotFoundException("Restaurant not found"));
+        verifyOwner(restaurant, getCurrentUser());
+        return orderRepository.findByRestaurantIdOrderByCreatedAtDesc(restaurantId).stream()
+                .map(this::mapToResponse).toList();
     }
 
     @Override
     public OrderResponse updateOrderStatus(Long orderId, OrderStatus status) {
-        User owner = getCurrentUser();
         Order order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new ResourceNotFoundException("Order not found"));
-        verifyOwner(order.getRestaurant(), owner);
+        verifyOwner(order.getRestaurant(), getCurrentUser());
         validateStatusTransition(order.getStatus(), status);
 
         order.setStatus(status);
@@ -141,23 +133,14 @@ public class OrderServiceImpl implements OrderService {
     }
 
     private void validateStatusTransition(OrderStatus current, OrderStatus next) {
-        if (current == next) {
-            throw new BadRequestException("Order is already in status " + current);
-        }
+        if (current == next) throw new BadRequestException("Order is already in status " + current);
         boolean valid = switch (current) {
             case PLACED -> next == OrderStatus.PREPARING || next == OrderStatus.CANCELLED;
             case PREPARING -> next == OrderStatus.OUT_FOR_DELIVERY || next == OrderStatus.CANCELLED;
             case OUT_FOR_DELIVERY -> next == OrderStatus.DELIVERED;
             case DELIVERED, CANCELLED -> false;
         };
-        if (!valid) {
-            throw new BadRequestException("Invalid order status transition: " + current + " -> " + next);
-        }
-    }
-
-    private Restaurant getRestaurant(Long restaurantId) {
-        return orderRepository.findRestaurantById(restaurantId)
-                .orElseThrow(() -> new ResourceNotFoundException("Restaurant not found"));
+        if (!valid) throw new BadRequestException("Invalid order status transition: " + current + " -> " + next);
     }
 
     private void verifyOwner(Restaurant restaurant, User owner) {
@@ -167,11 +150,9 @@ public class OrderServiceImpl implements OrderService {
     }
 
     private User getCurrentUser() {
-        org.springframework.security.core.Authentication authentication =
-                org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
-        com.localbites.security.CustomUserDetails userDetails =
-                (com.localbites.security.CustomUserDetails) authentication.getPrincipal();
-        return userRepository.findById(userDetails.getUserId())
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        CustomUserDetails details = (CustomUserDetails) authentication.getPrincipal();
+        return userRepository.findById(details.getUserId())
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
     }
 
