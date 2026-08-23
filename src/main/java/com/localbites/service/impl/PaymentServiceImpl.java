@@ -36,22 +36,17 @@ public class PaymentServiceImpl implements PaymentService {
 
     @Override
     public RazorpayOrderResponse createRazorpayOrder(Long userId, CreatePaymentRequest request) {
-        Order order = orderRepository.findById(request.getOrderId())
-                .orElseThrow(() -> new ResourceNotFoundException("Order not found"));
+        Order order = orderRepository.findById(request.getOrderId()).orElseThrow(() -> new ResourceNotFoundException("Order not found"));
         verifyCustomer(order, userId);
         if (order.getPaymentStatus() == PaymentStatus.PAID) throw new BadRequestException("Order has already been paid");
         if (order.getTotalAmount() == null || order.getTotalAmount().signum() <= 0) throw new BadRequestException("Invalid order amount");
-
         try {
-            if (order.getRazorpayOrderId() != null && !order.getRazorpayOrderId().isBlank()) {
-                return response(order, order.getRazorpayOrderId());
-            }
+            if (order.getRazorpayOrderId() != null && !order.getRazorpayOrderId().isBlank()) return response(order, order.getRazorpayOrderId());
             long amountPaise = order.getTotalAmount().movePointRight(2).longValueExact();
             JSONObject options = new JSONObject();
             options.put("amount", amountPaise);
             options.put("currency", "INR");
             options.put("receipt", "order_" + order.getId());
-
             com.razorpay.Order razorpayOrder = razorpayClient.orders.create(options);
             String razorpayOrderId = razorpayOrder.get("id");
             if (razorpayOrderId == null || razorpayOrderId.isBlank()) throw new BadRequestException("Razorpay did not return an order id");
@@ -67,19 +62,13 @@ public class PaymentServiceImpl implements PaymentService {
 
     @Override
     public void verifyPayment(Long userId, VerifyPaymentRequest request) {
-        Order order = orderRepository.findById(request.getOrderId())
-                .orElseThrow(() -> new ResourceNotFoundException("Order not found"));
+        Order order = orderRepository.findById(request.getOrderId()).orElseThrow(() -> new ResourceNotFoundException("Order not found"));
         verifyCustomer(order, userId);
         if (order.getPaymentStatus() == PaymentStatus.PAID) return;
-        if (order.getRazorpayOrderId() == null || !order.getRazorpayOrderId().equals(request.getRazorpayOrderId())) {
-            throw new BadRequestException("Razorpay order does not match local order");
-        }
+        if (order.getRazorpayOrderId() == null || !order.getRazorpayOrderId().equals(request.getRazorpayOrderId())) throw new BadRequestException("Razorpay order does not match local order");
 
-        String expectedSignature = generateSignature(
-                request.getRazorpayOrderId() + "|" + request.getRazorpayPaymentId(), keySecret);
-        if (!constantTimeEquals(expectedSignature, request.getRazorpaySignature())) {
-            throw new BadRequestException("Invalid payment signature");
-        }
+        String expectedSignature = generateSignature(request.getRazorpayOrderId() + "|" + request.getRazorpayPaymentId(), keySecret);
+        if (!constantTimeEquals(expectedSignature, request.getRazorpaySignature())) throw new BadRequestException("Invalid payment signature");
 
         try {
             JSONObject payment = new JSONObject(razorpayClient.payments.fetch(request.getRazorpayPaymentId()).toString());
@@ -87,8 +76,7 @@ public class PaymentServiceImpl implements PaymentService {
             if (!order.getRazorpayOrderId().equals(payment.optString("order_id", ""))
                     || payment.optLong("amount", -1L) != expectedPaise
                     || !"INR".equalsIgnoreCase(payment.optString("currency", ""))
-                    || !("captured".equalsIgnoreCase(payment.optString("status", ""))
-                    || "authorized".equalsIgnoreCase(payment.optString("status", "")))) {
+                    || !"captured".equalsIgnoreCase(payment.optString("status", ""))) {
                 throw new BadRequestException("Payment details do not match the order");
             }
         } catch (BadRequestException ex) {
@@ -105,18 +93,15 @@ public class PaymentServiceImpl implements PaymentService {
     public void verifyWebhook(String payload, String signature) {
         if (webhookSecret == null || webhookSecret.isBlank()) throw new BadRequestException("Payment webhook secret is not configured");
         if (!constantTimeEquals(generateSignature(payload, webhookSecret), signature)) throw new BadRequestException("Invalid webhook signature");
-
         try {
             JSONObject root = new JSONObject(payload);
             JSONObject payment = root.optJSONObject("payload");
             payment = payment == null ? null : payment.optJSONObject("payment");
             payment = payment == null ? null : payment.optJSONObject("entity");
             if (payment == null) throw new BadRequestException("Invalid webhook payload");
-
             String razorpayOrderId = payment.optString("order_id", "");
             String status = payment.optString("status", "");
             if (razorpayOrderId.isBlank()) return;
-
             orderRepository.findByRazorpayOrderId(razorpayOrderId).ifPresent(order -> {
                 if ("captured".equalsIgnoreCase(status)) order.setPaymentStatus(PaymentStatus.PAID);
                 else if ("failed".equalsIgnoreCase(status)) order.setPaymentStatus(PaymentStatus.FAILED);
@@ -130,10 +115,8 @@ public class PaymentServiceImpl implements PaymentService {
     }
 
     private RazorpayOrderResponse response(Order order, String razorpayOrderId) {
-        return RazorpayOrderResponse.builder()
-                .orderId(order.getId()).razorpayOrderId(razorpayOrderId)
-                .amount(order.getTotalAmount().movePointRight(2).longValueExact())
-                .currency("INR").key(keyId).build();
+        return RazorpayOrderResponse.builder().orderId(order.getId()).razorpayOrderId(razorpayOrderId)
+                .amount(order.getTotalAmount().movePointRight(2).longValueExact()).currency("INR").key(keyId).build();
     }
 
     private void verifyCustomer(Order order, Long userId) {
