@@ -7,7 +7,9 @@ import com.localbites.dto.cart.UpdateCartRequest;
 import com.localbites.entity.CartItem;
 import com.localbites.entity.MenuItem;
 import com.localbites.entity.User;
+import com.localbites.exception.BadRequestException;
 import com.localbites.exception.ResourceNotFoundException;
+import com.localbites.exception.UnauthorizedException;
 import com.localbites.repository.CartItemRepository;
 import com.localbites.repository.MenuItemRepository;
 import com.localbites.repository.UserRepository;
@@ -31,202 +33,112 @@ public class CartServiceImpl implements CartService {
     private final UserRepository userRepository;
 
     @Override
-    public CartResponse addToCart(
-            AddToCartRequest request
-    ) {
-
+    @Transactional
+    public CartResponse addToCart(AddToCartRequest request) {
         User currentUser = getCurrentUser();
+        MenuItem menuItem = menuItemRepository.findById(request.getMenuItemId())
+                .orElseThrow(() -> new ResourceNotFoundException("Menu item not found"));
 
-        MenuItem menuItem =
-                menuItemRepository.findById(
-                                request.getMenuItemId()
-                        )
-                        .orElseThrow(() ->
-                                new ResourceNotFoundException(
-                                        "Menu item not found"
-                                ));
+        validatePurchasable(menuItem);
 
-        CartItem cartItem =
-                cartItemRepository
-                        .findByUserIdAndMenuItemId(
-                                currentUser.getId(),
-                                menuItem.getId()
-                        )
-                        .orElse(null);
+        List<CartItem> existingItems = cartItemRepository.findByUserId(currentUser.getId());
+        if (!existingItems.isEmpty()) {
+            Long existingRestaurantId = existingItems.get(0).getMenuItem().getRestaurant().getId();
+            if (!existingRestaurantId.equals(menuItem.getRestaurant().getId())) {
+                throw new BadRequestException("Cart can contain items from only one restaurant");
+            }
+        }
 
-        if (cartItem != null) {
+        CartItem cartItem = cartItemRepository.findByUserIdAndMenuItemId(
+                currentUser.getId(), menuItem.getId()).orElse(null);
 
-            cartItem.setQuantity(
-                    cartItem.getQuantity()
-                            + request.getQuantity()
-            );
-
-        } else {
-
+        if (cartItem == null) {
             cartItem = CartItem.builder()
                     .user(currentUser)
                     .menuItem(menuItem)
-                    .quantity(
-                            request.getQuantity()
-                    )
+                    .quantity(request.getQuantity())
                     .build();
+        } else {
+            cartItem.setQuantity(cartItem.getQuantity() + request.getQuantity());
         }
 
         cartItemRepository.save(cartItem);
-
         return getCart();
     }
 
     @Override
-    public CartResponse updateCartItem(
-            Long cartItemId,
-            UpdateCartRequest request
-    ) {
-
-        User currentUser = getCurrentUser();
-
-        CartItem cartItem =
-                cartItemRepository.findById(cartItemId)
-                        .orElseThrow(() ->
-                                new ResourceNotFoundException(
-                                        "Cart item not found"
-                                ));
-
-        if (!cartItem.getUser()
-                .getId()
-                .equals(currentUser.getId())) {
-
-            throw new RuntimeException(
-                    "Unauthorized cart access"
-            );
-        }
-
-        cartItem.setQuantity(
-                request.getQuantity()
-        );
-
-        cartItemRepository.save(cartItem);
-
-        return getCart();
-    }
-
-    @Override
-    public void removeCartItem(
-            Long cartItemId
-    ) {
-
-        User currentUser = getCurrentUser();
-
-        CartItem cartItem =
-                cartItemRepository.findById(cartItemId)
-                        .orElseThrow(() ->
-                                new ResourceNotFoundException(
-                                        "Cart item not found"
-                                ));
-
-        if (!cartItem.getUser()
-                .getId()
-                .equals(currentUser.getId())) {
-
-            throw new RuntimeException(
-                    "Unauthorized cart access"
-            );
-        }
-
-        cartItemRepository.delete(cartItem);
-    }
-
     @Transactional
+    public CartResponse updateCartItem(Long cartItemId, UpdateCartRequest request) {
+        User currentUser = getCurrentUser();
+        CartItem cartItem = getOwnedCartItem(cartItemId, currentUser);
+        validatePurchasable(cartItem.getMenuItem());
+        cartItem.setQuantity(request.getQuantity());
+        cartItemRepository.save(cartItem);
+        return getCart();
+    }
+
     @Override
+    @Transactional
+    public void removeCartItem(Long cartItemId) {
+        cartItemRepository.delete(getOwnedCartItem(cartItemId, getCurrentUser()));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public CartResponse getCart() {
-
         User currentUser = getCurrentUser();
+        List<CartItemResponse> items = cartItemRepository.findByUserId(currentUser.getId())
+                .stream().map(this::mapToResponse).toList();
 
-        List<CartItem> cartItems =
-                cartItemRepository.findByUserId(
-                        currentUser.getId()
-                );
+        BigDecimal total = items.stream()
+                .map(CartItemResponse::getSubtotal)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        List<CartItemResponse> items =
-                cartItems.stream()
-                        .map(this::mapToResponse)
-                        .toList();
-
-        BigDecimal total =
-                items.stream()
-                        .map(
-                                CartItemResponse::getSubtotal
-                        )
-                        .reduce(
-                                BigDecimal.ZERO,
-                                BigDecimal::add
-                        );
-
-        return CartResponse.builder()
-                .items(items)
-                .totalAmount(total)
-                .build();
+        return CartResponse.builder().items(items).totalAmount(total).build();
     }
 
     @Override
+    @Transactional
     public void clearCart() {
-
-        User currentUser = getCurrentUser();
-
-        cartItemRepository.deleteByUserId(
-                currentUser.getId()
-        );
+        cartItemRepository.deleteByUserId(getCurrentUser().getId());
     }
 
-    private CartItemResponse mapToResponse(
-            CartItem cartItem
-    ) {
+    private void validatePurchasable(MenuItem menuItem) {
+        if (!Boolean.TRUE.equals(menuItem.getIsAvailable())) {
+            throw new BadRequestException("Menu item is currently unavailable");
+        }
+        if (!Boolean.TRUE.equals(menuItem.getRestaurant().getIsOpen())) {
+            throw new BadRequestException("Restaurant is currently closed");
+        }
+    }
 
-        BigDecimal subtotal =
-                cartItem.getMenuItem()
-                        .getPrice()
-                        .multiply(
-                                BigDecimal.valueOf(
-                                        cartItem.getQuantity()
-                                )
-                        );
+    private CartItem getOwnedCartItem(Long cartItemId, User currentUser) {
+        CartItem cartItem = cartItemRepository.findById(cartItemId)
+                .orElseThrow(() -> new ResourceNotFoundException("Cart item not found"));
+        if (!cartItem.getUser().getId().equals(currentUser.getId())) {
+            throw new UnauthorizedException("Unauthorized cart access");
+        }
+        return cartItem;
+    }
+
+    private CartItemResponse mapToResponse(CartItem cartItem) {
+        BigDecimal price = cartItem.getMenuItem().getPrice();
+        BigDecimal subtotal = price.multiply(BigDecimal.valueOf(cartItem.getQuantity()));
 
         return CartItemResponse.builder()
                 .cartItemId(cartItem.getId())
-                .menuItemId(
-                        cartItem.getMenuItem().getId()
-                )
-                .menuItemName(
-                        cartItem.getMenuItem().getName()
-                )
-                .quantity(
-                        cartItem.getQuantity()
-                )
-                .price(
-                        cartItem.getMenuItem()
-                                .getPrice()
-                )
+                .menuItemId(cartItem.getMenuItem().getId())
+                .menuItemName(cartItem.getMenuItem().getName())
+                .quantity(cartItem.getQuantity())
+                .price(price)
                 .subtotal(subtotal)
                 .build();
     }
 
     private User getCurrentUser() {
-
-        Authentication authentication =
-                SecurityContextHolder
-                        .getContext()
-                        .getAuthentication();
-
-        CustomUserDetails userDetails =
-                (CustomUserDetails)
-                        authentication.getPrincipal();
-
-        return userRepository.findById(
-                        userDetails.getUserId()
-                )
-                .orElseThrow(() ->
-                        new ResourceNotFoundException(
-                                "User not found"
-                        ));
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        CustomUserDetails userDetails = (CustomUserDetails) authentication.getPrincipal();
+        return userRepository.findById(userDetails.getUserId())
+                .orElseThrow(() -> new ResourceNotFoundException("User not found"));
     }
 }
