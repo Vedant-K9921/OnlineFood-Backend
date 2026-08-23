@@ -5,6 +5,7 @@ import com.localbites.dto.restaurant.RestaurantResponse;
 import com.localbites.entity.Restaurant;
 import com.localbites.entity.User;
 import com.localbites.exception.ResourceNotFoundException;
+import com.localbites.exception.UnauthorizedException;
 import com.localbites.repository.RestaurantRepository;
 import com.localbites.repository.UserRepository;
 import com.localbites.security.CustomUserDetails;
@@ -18,54 +19,33 @@ import java.util.List;
 
 @Service
 @RequiredArgsConstructor
-public class RestaurantServiceImpl
-        implements RestaurantService {
+public class RestaurantServiceImpl implements RestaurantService {
 
     private final RestaurantRepository restaurantRepository;
     private final UserRepository userRepository;
 
     @Override
-    public RestaurantResponse createRestaurant(
-            RestaurantRequest request
-    ) {
-
+    public RestaurantResponse createRestaurant(RestaurantRequest request) {
         User owner = getCurrentUser();
 
-        Restaurant restaurant =
-                Restaurant.builder()
-                        .owner(owner)
-                        .name(request.getName())
-                        .description(request.getDescription())
-                        .address(request.getAddress())
-                        .phone(request.getPhone())
-                        .imageUrl(request.getImageUrl())
-                        .cuisineType(request.getCuisineType())
-                        .isOpen(
-                                request.getIsOpen() == null
-                                        ? true
-                                        : request.getIsOpen()
-                        )
-                        .rating(0.0)
-                        .build();
+        Restaurant restaurant = Restaurant.builder()
+                .owner(owner)
+                .name(request.getName())
+                .description(request.getDescription())
+                .address(request.getAddress())
+                .phone(request.getPhone())
+                .imageUrl(request.getImageUrl())
+                .cuisineType(request.getCuisineType())
+                .isOpen(request.getIsOpen() == null || request.getIsOpen())
+                .rating(0.0)
+                .build();
 
-        Restaurant saved =
-                restaurantRepository.save(restaurant);
-
-        return mapToResponse(saved);
+        return mapToResponse(restaurantRepository.save(restaurant));
     }
 
     @Override
-    public RestaurantResponse updateRestaurant(
-            Long restaurantId,
-            RestaurantRequest request
-    ) {
-
-        Restaurant restaurant =
-                restaurantRepository.findById(restaurantId)
-                        .orElseThrow(() ->
-                                new ResourceNotFoundException(
-                                        "Restaurant not found"
-                                ));
+    public RestaurantResponse updateRestaurant(Long restaurantId, RestaurantRequest request) {
+        Restaurant restaurant = findOwnedRestaurant(restaurantId);
 
         restaurant.setName(request.getName());
         restaurant.setDescription(request.getDescription());
@@ -75,121 +55,68 @@ public class RestaurantServiceImpl
         restaurant.setCuisineType(request.getCuisineType());
 
         if (request.getIsOpen() != null) {
-            restaurant.setIsOpen(
-                    request.getIsOpen()
-            );
+            restaurant.setIsOpen(request.getIsOpen());
         }
 
-        Restaurant updated =
-                restaurantRepository.save(restaurant);
-
-        return mapToResponse(updated);
+        return mapToResponse(restaurantRepository.save(restaurant));
     }
 
     @Override
-    public void deleteRestaurant(
-            Long restaurantId
-    ) {
-
-        Restaurant restaurant =
-                restaurantRepository.findById(restaurantId)
-                        .orElseThrow(() ->
-                                new ResourceNotFoundException(
-                                        "Restaurant not found"
-                                ));
-
-        restaurantRepository.delete(restaurant);
+    public void deleteRestaurant(Long restaurantId) {
+        restaurantRepository.delete(findOwnedRestaurant(restaurantId));
     }
 
     @Override
-    public RestaurantResponse getRestaurantById(
-            Long restaurantId
-    ) {
-
-        Restaurant restaurant =
-                restaurantRepository.findById(restaurantId)
-                        .orElseThrow(() ->
-                                new ResourceNotFoundException(
-                                        "Restaurant not found"
-                                ));
-
+    public RestaurantResponse getRestaurantById(Long restaurantId) {
+        Restaurant restaurant = restaurantRepository.findById(restaurantId)
+                .orElseThrow(() -> new ResourceNotFoundException("Restaurant not found"));
         return mapToResponse(restaurant);
     }
 
     @Override
     public List<RestaurantResponse> getAllRestaurants() {
+        return restaurantRepository.findAll().stream().map(this::mapToResponse).toList();
+    }
 
-        return restaurantRepository.findAll()
+    @Override
+    public List<RestaurantResponse> getOwnerRestaurants() {
+        User owner = getCurrentUser();
+        return restaurantRepository.findAllByOwnerId(owner.getId())
                 .stream()
                 .map(this::mapToResponse)
                 .toList();
     }
 
-    @Override
-public List<RestaurantResponse> getOwnerRestaurants() {
+    private Restaurant findOwnedRestaurant(Long restaurantId) {
+        User owner = getCurrentUser();
+        Restaurant restaurant = restaurantRepository.findById(restaurantId)
+                .orElseThrow(() -> new ResourceNotFoundException("Restaurant not found"));
 
-    User owner = getCurrentUser();
+        if (!restaurant.getOwner().getId().equals(owner.getId())) {
+            throw new UnauthorizedException("You do not own this restaurant");
+        }
+        return restaurant;
+    }
 
-    Restaurant restaurant =
-            restaurantRepository
-                    .findByOwnerId(owner.getId())
-                    .orElseThrow(() ->
-                            new ResourceNotFoundException(
-                                    "Restaurant not found"
-                            ));
-
-    return List.of(
-            mapToResponse(restaurant)
-    );
-}
-
-    private RestaurantResponse mapToResponse(
-            Restaurant restaurant
-    ) {
-
+    private RestaurantResponse mapToResponse(Restaurant restaurant) {
         return RestaurantResponse.builder()
                 .id(restaurant.getId())
-                .ownerId(
-                        restaurant.getOwner().getId()
-                )
+                .ownerId(restaurant.getOwner().getId())
                 .name(restaurant.getName())
-                .description(
-                        restaurant.getDescription()
-                )
+                .description(restaurant.getDescription())
                 .address(restaurant.getAddress())
                 .phone(restaurant.getPhone())
-                .imageUrl(
-                        restaurant.getImageUrl()
-                )
-                .cuisineType(
-                        restaurant.getCuisineType()
-                )
-                .isOpen(
-                        restaurant.getIsOpen()
-                )
-                .rating(
-                        restaurant.getRating()
-                )
+                .imageUrl(restaurant.getImageUrl())
+                .cuisineType(restaurant.getCuisineType())
+                .isOpen(restaurant.getIsOpen())
+                .rating(restaurant.getRating())
                 .build();
     }
 
     private User getCurrentUser() {
-
-        Authentication authentication =
-                SecurityContextHolder
-                        .getContext()
-                        .getAuthentication();
-
-        CustomUserDetails userDetails =
-                (CustomUserDetails)
-                        authentication.getPrincipal();
-
-        return userRepository.findById(
-                        userDetails.getUserId()
-                )
-                .orElseThrow(() ->
-                        new ResourceNotFoundException(
-                                "User not found"
-                        ));
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        CustomUserDetails userDetails = (CustomUserDetails) authentication.getPrincipal();
+        return userRepository.findById(userDetails.getUserId())
+                .orElseThrow(() -> new ResourceNotFoundException("User not found"));
     }
 }
