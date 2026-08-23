@@ -6,12 +6,9 @@ import com.localbites.dto.payment.VerifyPaymentRequest;
 
 public interface PaymentService {
 
-    RazorpayOrderResponse createRazorpayOrder(
-            Long userId,
-            CreatePaymentRequest request
-    );
+    RazorpayOrderResponse createRazorpayOrder(Long userId, CreatePaymentRequest request);
 
-    void verifyPayment(
-            VerifyPaymentRequest request
-    );
+    void verifyPayment(Long userId, VerifyPaymentRequest request);
+
+    void verifyWebhook(String payload, String signature);
 }
