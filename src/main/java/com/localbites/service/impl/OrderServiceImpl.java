@@ -64,11 +64,14 @@ public class OrderServiceImpl implements OrderService {
             if (!Boolean.TRUE.equals(menuItem.getIsAvailable())) {
                 throw new BadRequestException("Menu item is unavailable: " + menuItem.getName());
             }
-            if (cartItem.getQuantity() == null || cartItem.getQuantity() <= 0) {
+            if (cartItem.getQuantity() == null || cartItem.getQuantity() <= 0 || cartItem.getQuantity() > 99) {
                 throw new BadRequestException("Invalid cart quantity");
             }
 
             BigDecimal price = menuItem.getPrice();
+            if (price == null || price.signum() <= 0) {
+                throw new BadRequestException("Invalid menu item price");
+            }
             totalAmount = totalAmount.add(price.multiply(BigDecimal.valueOf(cartItem.getQuantity())));
             orderItems.add(OrderItem.builder()
                     .menuItem(menuItem)
@@ -121,10 +124,12 @@ public class OrderServiceImpl implements OrderService {
 
     @Override
     public OrderResponse updateOrderStatus(Long orderId, OrderStatus status) {
+        if (status == null) throw new BadRequestException("Order status is required");
+
         Order order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new ResourceNotFoundException("Order not found"));
         verifyOwner(order.getRestaurant(), getCurrentUser());
-        validateStatusTransition(order.getStatus(), status);
+        validateStatusTransition(order, status);
 
         order.setStatus(status);
         Order savedOrder = orderRepository.save(order);
@@ -132,15 +137,26 @@ public class OrderServiceImpl implements OrderService {
         return mapToResponse(savedOrder);
     }
 
-    private void validateStatusTransition(OrderStatus current, OrderStatus next) {
+    private void validateStatusTransition(Order order, OrderStatus next) {
+        OrderStatus current = order.getStatus();
         if (current == next) throw new BadRequestException("Order is already in status " + current);
+
         boolean valid = switch (current) {
             case PLACED -> next == OrderStatus.PREPARING || next == OrderStatus.CANCELLED;
             case PREPARING -> next == OrderStatus.OUT_FOR_DELIVERY || next == OrderStatus.CANCELLED;
             case OUT_FOR_DELIVERY -> next == OrderStatus.DELIVERED;
             case DELIVERED, CANCELLED -> false;
         };
+
         if (!valid) throw new BadRequestException("Invalid order status transition: " + current + " -> " + next);
+
+        if (next == OrderStatus.PREPARING && order.getPaymentStatus() != PaymentStatus.PAID) {
+            throw new BadRequestException("Payment must be completed before preparing the order");
+        }
+
+        if (next == OrderStatus.CANCELLED && order.getPaymentStatus() == PaymentStatus.PAID) {
+            throw new BadRequestException("Paid orders cannot be cancelled without a refund");
+        }
     }
 
     private void verifyOwner(Restaurant restaurant, User owner) {
