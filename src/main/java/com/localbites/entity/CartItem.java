@@ -4,7 +4,9 @@ import jakarta.persistence.*;
 import lombok.*;
 
 @Entity
-@Table(name = "cart_items")
+@Table(name = "cart_items", uniqueConstraints = {
+        @UniqueConstraint(name = "uk_cart_user_menu_item", columnNames = {"user_id", "menu_item_id"})
+})
 @Getter
 @Setter
 @Builder
@@ -17,11 +19,11 @@ public class CartItem {
     private Long id;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumn(name = "user_id")
+    @JoinColumn(name = "user_id", nullable = false)
     private User user;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumn(name = "menu_item_id")
+    @JoinColumn(name = "menu_item_id", nullable = false)
     private MenuItem menuItem;
 
     @Column(nullable = false)
