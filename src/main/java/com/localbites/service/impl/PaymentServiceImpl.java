@@ -19,7 +19,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
-import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 
@@ -31,33 +30,22 @@ public class PaymentServiceImpl implements PaymentService {
     private final RazorpayClient razorpayClient;
     private final OrderRepository orderRepository;
 
-    @Value("${razorpay.key.id}")
-    private String keyId;
-
-    @Value("${razorpay.key.secret}")
-    private String keySecret;
-
-    @Value("${razorpay.webhook.secret:}")
-    private String webhookSecret;
+    @Value("${razorpay.key.id}") private String keyId;
+    @Value("${razorpay.key.secret}") private String keySecret;
+    @Value("${razorpay.webhook.secret:}") private String webhookSecret;
 
     @Override
     public RazorpayOrderResponse createRazorpayOrder(Long userId, CreatePaymentRequest request) {
         Order order = orderRepository.findById(request.getOrderId())
                 .orElseThrow(() -> new ResourceNotFoundException("Order not found"));
         verifyCustomer(order, userId);
-
-        if (order.getPaymentStatus() == PaymentStatus.PAID) {
-            throw new BadRequestException("Order has already been paid");
-        }
-        if (order.getTotalAmount() == null || order.getTotalAmount().signum() <= 0) {
-            throw new BadRequestException("Invalid order amount");
-        }
+        if (order.getPaymentStatus() == PaymentStatus.PAID) throw new BadRequestException("Order has already been paid");
+        if (order.getTotalAmount() == null || order.getTotalAmount().signum() <= 0) throw new BadRequestException("Invalid order amount");
 
         try {
             if (order.getRazorpayOrderId() != null && !order.getRazorpayOrderId().isBlank()) {
                 return response(order, order.getRazorpayOrderId());
             }
-
             long amountPaise = order.getTotalAmount().movePointRight(2).longValueExact();
             JSONObject options = new JSONObject();
             options.put("amount", amountPaise);
@@ -66,10 +54,7 @@ public class PaymentServiceImpl implements PaymentService {
 
             com.razorpay.Order razorpayOrder = razorpayClient.orders.create(options);
             String razorpayOrderId = razorpayOrder.get("id");
-            if (razorpayOrderId == null || razorpayOrderId.isBlank()) {
-                throw new BadRequestException("Razorpay did not return an order id");
-            }
-
+            if (razorpayOrderId == null || razorpayOrderId.isBlank()) throw new BadRequestException("Razorpay did not return an order id");
             order.setRazorpayOrderId(razorpayOrderId);
             orderRepository.save(order);
             return response(order, razorpayOrderId);
@@ -85,34 +70,25 @@ public class PaymentServiceImpl implements PaymentService {
         Order order = orderRepository.findById(request.getOrderId())
                 .orElseThrow(() -> new ResourceNotFoundException("Order not found"));
         verifyCustomer(order, userId);
-
-        if (order.getPaymentStatus() == PaymentStatus.PAID) {
-            return;
-        }
-        if (order.getRazorpayOrderId() == null
-                || !order.getRazorpayOrderId().equals(request.getRazorpayOrderId())) {
+        if (order.getPaymentStatus() == PaymentStatus.PAID) return;
+        if (order.getRazorpayOrderId() == null || !order.getRazorpayOrderId().equals(request.getRazorpayOrderId())) {
             throw new BadRequestException("Razorpay order does not match local order");
         }
 
-        String generatedSignature = generateSignature(
+        String expectedSignature = generateSignature(
                 request.getRazorpayOrderId() + "|" + request.getRazorpayPaymentId(), keySecret);
-        if (!constantTimeEquals(generatedSignature, request.getRazorpaySignature())) {
+        if (!constantTimeEquals(expectedSignature, request.getRazorpaySignature())) {
             throw new BadRequestException("Invalid payment signature");
         }
 
         try {
-            Object paymentObject = razorpayClient.payments.fetch(request.getRazorpayPaymentId());
-            JSONObject payment = new JSONObject(paymentObject.toString());
-            String paymentOrderId = payment.optString("order_id", "");
+            JSONObject payment = new JSONObject(razorpayClient.payments.fetch(request.getRazorpayPaymentId()).toString());
             long expectedPaise = order.getTotalAmount().movePointRight(2).longValueExact();
-            long paidPaise = payment.optLong("amount", -1L);
-            String currency = payment.optString("currency", "");
-            String status = payment.optString("status", "");
-
-            if (!order.getRazorpayOrderId().equals(paymentOrderId)
-                    || paidPaise != expectedPaise
-                    || !"INR".equalsIgnoreCase(currency)
-                    || !("captured".equalsIgnoreCase(status) || "authorized".equalsIgnoreCase(status))) {
+            if (!order.getRazorpayOrderId().equals(payment.optString("order_id", ""))
+                    || payment.optLong("amount", -1L) != expectedPaise
+                    || !"INR".equalsIgnoreCase(payment.optString("currency", ""))
+                    || !("captured".equalsIgnoreCase(payment.optString("status", ""))
+                    || "authorized".equalsIgnoreCase(payment.optString("status", "")))) {
                 throw new BadRequestException("Payment details do not match the order");
             }
         } catch (BadRequestException ex) {
@@ -127,40 +103,25 @@ public class PaymentServiceImpl implements PaymentService {
 
     @Override
     public void verifyWebhook(String payload, String signature) {
-        if (webhookSecret == null || webhookSecret.isBlank()) {
-            throw new BadRequestException("Payment webhook secret is not configured");
-        }
-        if (signature == null || signature.isBlank()
-                || !constantTimeEquals(generateSignature(payload, webhookSecret), signature)) {
-            throw new BadRequestException("Invalid webhook signature");
-        }
+        if (webhookSecret == null || webhookSecret.isBlank()) throw new BadRequestException("Payment webhook secret is not configured");
+        if (!constantTimeEquals(generateSignature(payload, webhookSecret), signature)) throw new BadRequestException("Invalid webhook signature");
 
         try {
             JSONObject root = new JSONObject(payload);
-            JSONObject eventPayload = root.optJSONObject("payload");
-            JSONObject paymentEntity = eventPayload == null ? null : eventPayload
-                    .optJSONObject("payment");
-            paymentEntity = paymentEntity == null ? null : paymentEntity.optJSONObject("entity");
-            if (paymentEntity == null) {
-                throw new BadRequestException("Invalid webhook payload");
-            }
+            JSONObject payment = root.optJSONObject("payload");
+            payment = payment == null ? null : payment.optJSONObject("payment");
+            payment = payment == null ? null : payment.optJSONObject("entity");
+            if (payment == null) throw new BadRequestException("Invalid webhook payload");
 
-            String razorpayOrderId = paymentEntity.optString("order_id", "");
-            String status = paymentEntity.optString("status", "");
+            String razorpayOrderId = payment.optString("order_id", "");
+            String status = payment.optString("status", "");
             if (razorpayOrderId.isBlank()) return;
 
-            orderRepository.findAll().stream()
-                    .filter(order -> razorpayOrderId.equals(order.getRazorpayOrderId()))
-                    .findFirst()
-                    .ifPresent(order -> {
-                        if ("captured".equalsIgnoreCase(status)) {
-                            order.setPaymentStatus(PaymentStatus.PAID);
-                            orderRepository.save(order);
-                        } else if ("failed".equalsIgnoreCase(status)) {
-                            order.setPaymentStatus(PaymentStatus.FAILED);
-                            orderRepository.save(order);
-                        }
-                    });
+            orderRepository.findByRazorpayOrderId(razorpayOrderId).ifPresent(order -> {
+                if ("captured".equalsIgnoreCase(status)) order.setPaymentStatus(PaymentStatus.PAID);
+                else if ("failed".equalsIgnoreCase(status)) order.setPaymentStatus(PaymentStatus.FAILED);
+                orderRepository.save(order);
+            });
         } catch (BadRequestException ex) {
             throw ex;
         } catch (Exception ex) {
@@ -170,18 +131,13 @@ public class PaymentServiceImpl implements PaymentService {
 
     private RazorpayOrderResponse response(Order order, String razorpayOrderId) {
         return RazorpayOrderResponse.builder()
-                .orderId(order.getId())
-                .razorpayOrderId(razorpayOrderId)
+                .orderId(order.getId()).razorpayOrderId(razorpayOrderId)
                 .amount(order.getTotalAmount().movePointRight(2).longValueExact())
-                .currency("INR")
-                .key(keyId)
-                .build();
+                .currency("INR").key(keyId).build();
     }
 
     private void verifyCustomer(Order order, Long userId) {
-        if (!order.getUser().getId().equals(userId)) {
-            throw new UnauthorizedException("You do not own this order");
-        }
+        if (!order.getUser().getId().equals(userId)) throw new UnauthorizedException("You do not own this order");
     }
 
     private String generateSignature(String data, String secret) {
@@ -199,8 +155,6 @@ public class PaymentServiceImpl implements PaymentService {
 
     private boolean constantTimeEquals(String left, String right) {
         if (left == null || right == null) return false;
-        return MessageDigest.isEqual(
-                left.getBytes(StandardCharsets.UTF_8),
-                right.getBytes(StandardCharsets.UTF_8));
+        return MessageDigest.isEqual(left.getBytes(StandardCharsets.UTF_8), right.getBytes(StandardCharsets.UTF_8));
     }
 }
