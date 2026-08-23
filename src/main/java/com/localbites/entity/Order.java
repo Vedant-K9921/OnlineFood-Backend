@@ -4,19 +4,16 @@ import com.localbites.enums.OrderStatus;
 import com.localbites.enums.PaymentStatus;
 import jakarta.persistence.*;
 import lombok.*;
-import java.util.List;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Entity
-    @Table(
-    name = "orders",
-    indexes = {
+@Table(name = "orders", indexes = {
         @Index(name = "idx_order_user", columnList = "user_id"),
         @Index(name = "idx_order_restaurant", columnList = "restaurant_id")
-    }
-)
+})
 @Getter
 @Setter
 @Builder
@@ -29,11 +26,11 @@ public class Order {
     private Long id;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumn(name = "user_id")
+    @JoinColumn(name = "user_id", nullable = false)
     private User user;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumn(name = "restaurant_id")
+    @JoinColumn(name = "restaurant_id", nullable = false)
     private Restaurant restaurant;
 
     @Enumerated(EnumType.STRING)
@@ -50,37 +47,25 @@ public class Order {
     @Column(nullable = false)
     private PaymentStatus paymentStatus;
 
+    @Column(unique = true, length = 64)
     private String razorpayOrderId;
 
     private LocalDateTime createdAt;
-
     private LocalDateTime updatedAt;
 
-    @OneToMany(
-        mappedBy = "order",
-        cascade = CascadeType.ALL,
-        orphanRemoval = true
-    )
+    @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<OrderItem> orderItems;
 
     @PrePersist
     public void prePersist() {
         createdAt = LocalDateTime.now();
         updatedAt = LocalDateTime.now();
-
-        if (status == null) {
-            status = OrderStatus.PLACED;
-        }
-
-        if (paymentStatus == null) {
-            paymentStatus = PaymentStatus.PENDING;
-        }
+        if (status == null) status = OrderStatus.PLACED;
+        if (paymentStatus == null) paymentStatus = PaymentStatus.PENDING;
     }
 
     @PreUpdate
     public void preUpdate() {
         updatedAt = LocalDateTime.now();
     }
-
-
 }
