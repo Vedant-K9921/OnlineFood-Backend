@@ -19,6 +19,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 
@@ -36,13 +37,14 @@ public class PaymentServiceImpl implements PaymentService {
 
     @Override
     public RazorpayOrderResponse createRazorpayOrder(Long userId, CreatePaymentRequest request) {
-        Order order = orderRepository.findById(request.getOrderId()).orElseThrow(() -> new ResourceNotFoundException("Order not found"));
+        Order order = orderRepository.findById(request.getOrderId())
+                .orElseThrow(() -> new ResourceNotFoundException("Order not found"));
         verifyCustomer(order, userId);
         if (order.getPaymentStatus() == PaymentStatus.PAID) throw new BadRequestException("Order has already been paid");
         if (order.getTotalAmount() == null || order.getTotalAmount().signum() <= 0) throw new BadRequestException("Invalid order amount");
         try {
             if (order.getRazorpayOrderId() != null && !order.getRazorpayOrderId().isBlank()) return response(order, order.getRazorpayOrderId());
-            long amountPaise = order.getTotalAmount().movePointRight(2).longValueExact();
+            long amountPaise = toPaise(order.getTotalAmount());
             JSONObject options = new JSONObject();
             options.put("amount", amountPaise);
             options.put("currency", "INR");
@@ -62,7 +64,8 @@ public class PaymentServiceImpl implements PaymentService {
 
     @Override
     public void verifyPayment(Long userId, VerifyPaymentRequest request) {
-        Order order = orderRepository.findById(request.getOrderId()).orElseThrow(() -> new ResourceNotFoundException("Order not found"));
+        Order order = orderRepository.findById(request.getOrderId())
+                .orElseThrow(() -> new ResourceNotFoundException("Order not found"));
         verifyCustomer(order, userId);
         if (order.getPaymentStatus() == PaymentStatus.PAID) return;
         if (order.getRazorpayOrderId() == null || !order.getRazorpayOrderId().equals(request.getRazorpayOrderId())) throw new BadRequestException("Razorpay order does not match local order");
@@ -72,9 +75,8 @@ public class PaymentServiceImpl implements PaymentService {
 
         try {
             JSONObject payment = new JSONObject(razorpayClient.payments.fetch(request.getRazorpayPaymentId()).toString());
-            long expectedPaise = order.getTotalAmount().movePointRight(2).longValueExact();
             if (!order.getRazorpayOrderId().equals(payment.optString("order_id", ""))
-                    || payment.optLong("amount", -1L) != expectedPaise
+                    || payment.optLong("amount", -1L) != toPaise(order.getTotalAmount())
                     || !"INR".equalsIgnoreCase(payment.optString("currency", ""))
                     || !"captured".equalsIgnoreCase(payment.optString("status", ""))) {
                 throw new BadRequestException("Payment details do not match the order");
@@ -99,13 +101,26 @@ public class PaymentServiceImpl implements PaymentService {
             payment = payment == null ? null : payment.optJSONObject("payment");
             payment = payment == null ? null : payment.optJSONObject("entity");
             if (payment == null) throw new BadRequestException("Invalid webhook payload");
+
             String razorpayOrderId = payment.optString("order_id", "");
             String status = payment.optString("status", "");
-            if (razorpayOrderId.isBlank()) return;
+            long webhookAmountPaise = payment.optLong("amount", -1L);
+            String currency = payment.optString("currency", "");
+            if (razorpayOrderId.isBlank()) throw new BadRequestException("Webhook payment has no order id");
+
             orderRepository.findByRazorpayOrderId(razorpayOrderId).ifPresent(order -> {
-                if ("captured".equalsIgnoreCase(status)) order.setPaymentStatus(PaymentStatus.PAID);
-                else if ("failed".equalsIgnoreCase(status)) order.setPaymentStatus(PaymentStatus.FAILED);
-                orderRepository.save(order);
+                if ("captured".equalsIgnoreCase(status)) {
+                    if (webhookAmountPaise != toPaise(order.getTotalAmount()) || !"INR".equalsIgnoreCase(currency)) {
+                        throw new BadRequestException("Webhook payment details do not match the order");
+                    }
+                    if (order.getPaymentStatus() != PaymentStatus.PAID) {
+                        order.setPaymentStatus(PaymentStatus.PAID);
+                        orderRepository.save(order);
+                    }
+                } else if ("failed".equalsIgnoreCase(status) && order.getPaymentStatus() != PaymentStatus.PAID) {
+                    order.setPaymentStatus(PaymentStatus.FAILED);
+                    orderRepository.save(order);
+                }
             });
         } catch (BadRequestException ex) {
             throw ex;
@@ -114,9 +129,17 @@ public class PaymentServiceImpl implements PaymentService {
         }
     }
 
+    private long toPaise(BigDecimal amount) {
+        try {
+            return amount.movePointRight(2).longValueExact();
+        } catch (ArithmeticException ex) {
+            throw new BadRequestException("Order amount must have at most two decimal places");
+        }
+    }
+
     private RazorpayOrderResponse response(Order order, String razorpayOrderId) {
         return RazorpayOrderResponse.builder().orderId(order.getId()).razorpayOrderId(razorpayOrderId)
-                .amount(order.getTotalAmount().movePointRight(2).longValueExact()).currency("INR").key(keyId).build();
+                .amount(toPaise(order.getTotalAmount())).currency("INR").key(keyId).build();
     }
 
     private void verifyCustomer(Order order, Long userId) {
