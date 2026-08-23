@@ -35,7 +35,7 @@ class AuthServiceImplTest {
         request.setEmail("attacker@example.com");
         request.setPassword("password123");
         request.setPhone("9999999999");
-        request.setRole(Role.ADMIN);
+        request.setRole(Role.ROLE_ADMIN);
 
         when(userRepository.existsByEmail("attacker@example.com")).thenReturn(false);
         when(passwordEncoder.encode("password123")).thenReturn("encoded");
@@ -48,7 +48,7 @@ class AuthServiceImplTest {
 
         var response = service.register(request);
 
-        assertEquals(Role.CUSTOMER, response.getUser().getRole());
-        verify(userRepository).save(argThat(user -> user.getRole() == Role.CUSTOMER));
+        assertEquals(Role.ROLE_CUSTOMER, response.getUser().getRole());
+        verify(userRepository).save(argThat(user -> user.getRole() == Role.ROLE_CUSTOMER));
     }
 }
