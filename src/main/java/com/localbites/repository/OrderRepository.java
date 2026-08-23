@@ -8,40 +8,32 @@ import org.springframework.data.repository.query.Param;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Optional;
 
-public interface OrderRepository
-        extends JpaRepository<Order, Long> {
+public interface OrderRepository extends JpaRepository<Order, Long> {
 
-    List<Order> findByUserIdOrderByCreatedAtDesc(
-            Long userId
-    );
+    List<Order> findByUserIdOrderByCreatedAtDesc(Long userId);
 
-    List<Order> findByRestaurantIdOrderByCreatedAtDesc(
-            Long restaurantId
-    );
+    List<Order> findByRestaurantIdOrderByCreatedAtDesc(Long restaurantId);
 
     Long countByRestaurantId(Long restaurantId);
 
-    Long countByRestaurantIdAndStatus(
-            Long restaurantId,
-            OrderStatus status
-    );
+    Long countByRestaurantIdAndStatus(Long restaurantId, OrderStatus status);
+
+    Optional<Order> findByRazorpayOrderId(String razorpayOrderId);
 
     @Query("""
-    SELECT COALESCE(SUM(o.totalAmount),0)
-    FROM Order o
-    WHERE o.restaurant.id = :restaurantId
-    AND o.paymentStatus = 'PAID'
-    """)
-    BigDecimal getTotalRevenue(
-            @Param("restaurantId")
-            Long restaurantId
-    );
+        SELECT COALESCE(SUM(o.totalAmount),0)
+        FROM Order o
+        WHERE o.restaurant.id = :restaurantId
+        AND o.paymentStatus = 'PAID'
+        """)
+    BigDecimal getTotalRevenue(@Param("restaurantId") Long restaurantId);
 
     @Query("""
         SELECT COALESCE(SUM(o.totalAmount),0)
         FROM Order o
         WHERE o.paymentStatus = 'PAID'
         """)
-        BigDecimal getPlatformRevenue();
+    BigDecimal getPlatformRevenue();
 }
